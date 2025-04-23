@@ -11,70 +11,67 @@ import matplotlib.pyplot as plt
 # Variable selection by use co-linear index
 
 
-def compute_vif(X):
+def calcular_vif(X):
     vif = []
-    for j in range(X.shape[1]):
-        X_j = X[:, j]
-        X_rest = np.delete(X, j, axis=1)
-
-        beta_j = np.linalg.pinv(X_rest) @ X_j
-        X_j_hat = X_rest @ beta_j
-
-        corr = np.corrcoef(X_j, X_j_hat)[0, 1]
-        R2_j = corr**2 if not np.isnan(corr) else 0.0
-        vif_j = 1 / (1 - R2_j) if R2_j < 1 else np.inf
-        vif.append(vif_j)
+    for i in range(X.shape[1]):
+        y_i = X.iloc[:, i]
+        X_otros = X.drop(X.columns[i], axis=1)
+        X_otros = np.column_stack([np.ones(X_otros.shape[0]), X_otros])
+        beta, _, _, _ = np.linalg.lstsq(X_otros, y_i, rcond=None)
+        y_pred = X_otros @ beta
+        ss_res = np.sum((y_i - y_pred)**2)
+        ss_tot = np.sum((y_i - np.mean(y_i))**2)
+        r2 = 1 - (ss_res / ss_tot)
+        vif_val = 1 / (1 - r2) if r2 < 1 else np.inf
+        vif.append(vif_val)
     return np.array(vif)
 
-def selection_vars():
-    df = pd.read_csv("dtrn.csv")
-
-    X = df.iloc[:, :-1].values
-    y = df.iloc[:, -1].values
-    variable_names = df.columns[:-1]
-    n, m = X.shape
-
-    vif = compute_vif(X)
-
-    X_with_1 = np.hstack((np.ones((n, 1)), X))
+def calcular_Ij(X, y):
+    n = len(y)
+    X_with_1 = np.hstack((np.ones((n, 1)), X.values))
     beta = np.linalg.pinv(X_with_1) @ y
-
     y_hat = X_with_1 @ beta
     residuals = y - y_hat
     mse = np.mean(residuals**2)
 
     XtX_inv = np.linalg.pinv(X_with_1.T @ X_with_1)
-    var_betas = mse * np.diag(XtX_inv)[1:]  # sin intercepto
-    mean_var_beta = np.mean(var_betas)
-    Q = var_betas / mean_var_beta
+    var_betas = mse * np.diag(XtX_inv)[1:]
 
-    Ij = np.sqrt(vif * Q)
+    vif_vals = calcular_vif(X)
+    P = vif_vals / np.mean(vif_vals)
+    Q = var_betas / np.mean(var_betas)
 
-    df_result = pd.DataFrame({
-        'Variable': variable_names,
-        'Coef': beta[1:],      # sin intercepto
-        'VIF': vif,
-        'Var(beta)': var_betas,
-        'Qj': Q,
-        'Ij': Ij
-    })
+    Ij = np.sqrt(P * Q)
+    return Ij, vif_vals, var_betas, beta[1:]
 
-    df_result.to_csv("indice_colinealidad.csv", index=False)
+def seleccion_iterativa_colinealidad(df, tau=2.0):
+    X = df.drop(columns="Y")
+    y = df["Y"].values
+    eliminadas = []
 
-    return df_result
-       
+    while True:
+        Ij, vif_vals, var_betas, coef = calcular_Ij(X, y)
+        max_Ij = np.max(Ij)
+        if max_Ij <= tau:
+            break
+        idx_max = np.argmax(Ij)
+        var_elim = X.columns[idx_max]
+        eliminadas.append((var_elim, max_Ij))
+        X = X.drop(columns=var_elim)
+
+    seleccionadas = X.columns.tolist()
+    return seleccionadas, eliminadas
 #---------------------------------------------------------------------
 def main():            
-    #Cargar los datos usando pandas
+    # Cargar los datos
     df = pd.read_csv('dataset.csv')
     
-    #division de los porcentajes de datos
+    # Dividir en train y test
     p_train = 0.80
     cut = int(len(df) * p_train)
     train = df[:cut]
     test = df[cut:]
 
-    #Guardar en archivos CSV
     train.to_csv("dtrn.csv", index=False)
     test.to_csv("dtst.csv", index=False)
 
@@ -82,39 +79,55 @@ def main():
     print("Ejemplos usados para test: ", len(test))
     print(df.head())
 
-    df_result = selection_vars()
+    # Proceso de selección
+    seleccionadas, eliminadas = seleccion_iterativa_colinealidad(train, tau=2.0)
 
-    #Define el threshold aquí
-    threshold = 10.0
+    # Guardar seleccionadas
+    pd.Series(seleccionadas).to_csv("selected_vars.csv", index=False, header=False)
 
-    # Selección según umbral de Ij
-    seleccionadas = df_result[df_result['Ij'] <= threshold]
-    eliminadas = df_result[df_result['Ij'] > threshold]
+    # Guardar eliminadas con Ij
+    df_eliminadas = pd.DataFrame(eliminadas, columns=["Variable", "Ij"])
+    df_eliminadas.to_csv("delete_vars.csv", index=False)
 
-    # Guardar archivos solicitados
-    seleccionadas['Variable'].to_csv("selected_vars.csv", index=False, header=False)
-    eliminadas['Variable'].to_csv("delete_vars.csv", index=False, header=False)
-    seleccionadas[['Variable', 'Coef']].to_csv("coefts.csv", index=False)
+    # Calcular coeficientes finales
+    X_final = train[seleccionadas]
+    y_final = train["Y"].values
+    X_with_1 = np.hstack((np.ones((len(X_final), 1)), X_final.values))
+    beta_final = np.linalg.pinv(X_with_1) @ y_final
+
+    df_coefs = pd.DataFrame({
+        "Variable": seleccionadas,
+        "Coef": beta_final[1:]  # sin el intercepto
+    })
+    df_coefs.to_csv("coefts.csv", index=False)
 
     print("✅ Archivos guardados:")
     print("- selected_vars.csv")
     print("- delete_vars.csv")
     print("- coefts.csv")
 
-    # Gráfico de variables eliminadas
-    plt.figure(figsize=(10, 6))
-    plt.bar(eliminadas['Variable'], eliminadas['Ij'], color='salmon')
-    plt.xlabel("Variables eliminadas")
-    plt.ylabel("Índice Ij")
-    plt.title("Variables eliminadas vs Índice de colinealidad")
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    plt.savefig("figure1.png")
-    plt.close()
+    # Gráfico eliminadas
+    if not df_eliminadas.empty:
+        plt.figure(figsize=(10, 6))
+        plt.bar(df_eliminadas['Variable'], df_eliminadas['Ij'], color='salmon')
+        plt.xlabel("Variables eliminadas")
+        plt.ylabel("Índice Ij")
+        plt.title("Variables eliminadas vs Índice de colinealidad")
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.savefig("figure1.png")
+        plt.close()
 
-    # Gráfico de variables seleccionadas
+    # Gráfico seleccionadas
+    # Para obtener Ij de las seleccionadas
+    Ij_final, _, _, _ = calcular_Ij(X_final, y_final)
+    df_seleccionadas = pd.DataFrame({
+        "Variable": seleccionadas,
+        "Ij": Ij_final
+    })
+
     plt.figure(figsize=(10, 6))
-    plt.bar(seleccionadas['Variable'], seleccionadas['Ij'], color='seagreen')
+    plt.bar(df_seleccionadas['Variable'], df_seleccionadas['Ij'], color='seagreen')
     plt.xlabel("Variables seleccionadas")
     plt.ylabel("Índice Ij")
     plt.title("Variables seleccionadas vs Índice de colinealidad")
@@ -123,12 +136,9 @@ def main():
     plt.savefig("figure2.png")
     plt.close()
 
-    print("📊 Gráficos generados:")
+    print("Gráficos generados:")
     print("- figure1.png (eliminadas)")
     print("- figure2.png (seleccionadas)")
-
-
-        
 
 if __name__ == '__main__':   
 	 main()
