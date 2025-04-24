@@ -101,7 +101,7 @@ def main():
     })
     df_coefs.to_csv("coefts.csv", index=False)
 
-    print("✅ Archivos guardados:")
+    print(" Archivos guardados:")
     print("- selected_vars.csv")
     print("- delete_vars.csv")
     print("- coefts.csv")
