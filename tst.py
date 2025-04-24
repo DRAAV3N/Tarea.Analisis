@@ -15,10 +15,9 @@ def calcular_r2(y, yhat):
     return 1 - ss_res / ss_tot
 
 def calcular_durbin_watson(residuals):
-    diff = np.diff(residuals)
-    numerator = np.sum(diff ** 2)
-    denominator = np.sum(residuals ** 2)
-    return numerator / denominator
+    num = np.sum(np.diff(residuals) ** 2)
+    den = np.sum(residuals ** 2)
+    return num / den
 
 # -------------------
 # Cargar datos
