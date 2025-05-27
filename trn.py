@@ -1,72 +1,82 @@
 #---------------------------------------------------------------------
 # Variable selection and coefficient estimation
 #---------------------------------------------------------------------
-
+import utility
+import plot
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-
-    
+from numpy.linalg import svd, inv
+  
 #---------------------------------------------------------------------
 # Variable selection by use co-linear index
-
-
-def calcular_vif(X):
-    vif = []
-    for i in range(X.shape[1]):
-        y_i = X.iloc[:, i]
-        X_otros = X.drop(X.columns[i], axis=1)
-        X_otros = np.column_stack([np.ones(X_otros.shape[0]), X_otros])
-        beta, _, _, _ = np.linalg.lstsq(X_otros, y_i, rcond=None)
-        y_pred = X_otros @ beta
-        ss_res = np.sum((y_i - y_pred)**2)
-        ss_tot = np.sum((y_i - np.mean(y_i))**2)
-        r2 = 1 - (ss_res / ss_tot)
-        vif_val = 1 / (1 - r2) if r2 < 1 else np.inf
-        vif.append(vif_val)
-    return np.array(vif)
-
-def calcular_Ij(X, y):
-    n = len(y)
-    X_with_1 = np.hstack((np.ones((n, 1)), X.values))
-    beta = np.linalg.pinv(X_with_1) @ y
-    y_hat = X_with_1 @ beta
-    residuals = y - y_hat
-    mse = np.mean(residuals**2)
-
-    XtX_inv = np.linalg.pinv(X_with_1.T @ X_with_1)
-    var_betas = mse * np.diag(XtX_inv)[1:]
-
-    vif_vals = calcular_vif(X)
-    P = vif_vals / np.mean(vif_vals)
-    Q = var_betas / np.mean(var_betas)
-
-    Ij = np.sqrt(P * Q)
-    return Ij, vif_vals, var_betas, beta[1:]
-
-def seleccion_iterativa_colinealidad(df, tau=2.0):
-    X = df.drop(columns="Y")
-    y = df["Y"].values
-    eliminadas = []
-
-    while True:
-        Ij, vif_vals, var_betas, coef = calcular_Ij(X, y)
-        max_Ij = np.max(Ij)
-        if max_Ij <= tau:
-            break
-        idx_max = np.argmax(Ij)
-        var_elim = X.columns[idx_max]
-        eliminadas.append((var_elim, max_Ij))
-        X = X.drop(columns=var_elim)
-
-    seleccionadas = X.columns.tolist()
-    return seleccionadas, eliminadas
 #---------------------------------------------------------------------
+def GCV(X, y, lambda_min, lambda_max, n_lambda):
+    lambdas = np.logspace(np.log10(lambda_min), np.log10(lambda_max), n_lambda)
+    lambda_opt = lambdas[0]
+    min_gcv = np.inf
+
+    U, s, Vt = svd(X, full_matrices=False)
+    y_t = U.T @ y
+    N = X.shape[0]
+
+    for l in lambdas:
+        d = s**2 / (s**2 + l)
+        df = np.sum(d)
+        y_hat = d * y_t
+        gcv = np.sum((y_t - y_hat)**2) / (N - df)**2
+
+        if gcv < min_gcv:
+            min_gcv = gcv
+            lambda_opt = l
+
+    return  lambda_opt
+
+def Selected_Vars(df, lambda_opt, topK):
+    x = df.drop(columns="Y").copy()
+    y = df["Y"].values
+    
+
+    while x.shape[1] > topK:
+        Ij = utility.calcular_Ij_ridge(x, y, lambda_opt)
+        idx_max = np.argmax(Ij)
+        col_elim = x.columns[idx_max]
+        print(f"Eliminando: {col_elim} con Ij = {Ij[idx_max]:.4f}")
+        x = x.drop(columns=[col_elim])
+
+    # Guardar variables seleccionadas
+    selected_vars = pd.DataFrame({'variable': x.columns})
+    selected_vars.to_csv("selected_vars.csv", index=False)
+    print("Variables seleccionadas guardadas en 'selected_vars.csv'")
+    return x, y
+
+def guardar_coefts(X, y, lambda_opt, filename="coefts.csv"):
+    n = len(y)
+    X_with_1 = np.hstack([np.ones((n, 1)), X])
+    I = np.eye(X_with_1.shape[1])
+    I[0, 0] = 0  # no regularizar intercepto
+    XtX = X_with_1.T @ X_with_1
+    beta = np.linalg.inv(XtX + lambda_opt * I) @ X_with_1.T @ y
+
+    df_coef = pd.DataFrame([beta])
+    df_lambda = pd.DataFrame([[lambda_opt] + [None]*(len(beta)-1)])
+    df_salida = pd.concat([df_coef, df_lambda], ignore_index=True)
+    df_salida.to_csv(filename, index=False, header=False)
+    print(f"Coeficientes y lambda óptimo guardados en '{filename}'")
+
+
 def main():            
     # Cargar los datos
     df = pd.read_csv('dataset.csv')
+
+    # Cargar configuración
+    config = pd.read_csv('cfg_lambda.csv').iloc[0]
+    lambda_min = config['Lambda_min']
+    lambda_max = config['Lambda_max']
+    n_lambda = int(config['Cantidad_Lambda'])
+    topK = int(config['TopK'])
     
-    # Dividir en train y test
+    # Dividir en train y test -----------------------
     p_train = 0.80
     cut = int(len(df) * p_train)
     train = df[:cut]
@@ -78,67 +88,25 @@ def main():
     print("Ejemplos usados para entrenar: ", len(train))
     print("Ejemplos usados para test: ", len(test))
     print(df.head())
+    #--------------------------------------------------
 
-    # Proceso de selección
-    seleccionadas, eliminadas = seleccion_iterativa_colinealidad(train, tau=2.0)
+    print(df.columns)
 
-    # Guardar seleccionadas
-    pd.Series(seleccionadas).to_csv("selected_vars.csv", index=False, header=False)
+    #Elimina variable correspondiente al valor
+    X = df.drop(columns="Y").copy()
+    y = df["Y"].values
 
-    # Guardar eliminadas con Ij
-    df_eliminadas = pd.DataFrame(eliminadas, columns=["Variable", "Ij"])
-    df_eliminadas.to_csv("delete_vars.csv", index=False)
+    lambda_opt = GCV(X, y, lambda_min, lambda_max, n_lambda)
 
-    # Calcular coeficientes finales
-    X_final = train[seleccionadas]
-    y_final = train["Y"].values
-    X_with_1 = np.hstack((np.ones((len(X_final), 1)), X_final.values))
-    beta_final = np.linalg.pinv(X_with_1) @ y_final
+    X_sel, y_sel = Selected_Vars(df, lambda_opt, topK)
+    guardar_coefts(X_sel.values, y_sel, lambda_opt)
+    
+    Ij_todas = utility.calcular_Ij_ridge(X, df["Y"].values, lambda_opt)
+    # Guardar selected_vars.csv
 
-    df_coefs = pd.DataFrame({
-        "Variable": seleccionadas,
-        "Coef": beta_final[1:]  # sin el intercepto
-    })
-    df_coefs.to_csv("coefts.csv", index=False)
+    plot.graficar_Ij_todas(Ij_todas, X.columns, "figure1.png")
+    plot.graficar_Ij_seleccionadas(X_sel, y_sel, lambda_opt, "figure2.png")
 
-    print(" Archivos guardados:")
-    print("- selected_vars.csv")
-    print("- delete_vars.csv")
-    print("- coefts.csv")
-
-    # Gráfico eliminadas
-    if not df_eliminadas.empty:
-        plt.figure(figsize=(10, 6))
-        plt.bar(df_eliminadas['Variable'], df_eliminadas['Ij'], color='salmon')
-        plt.xlabel("Number of Variables")
-        plt.ylabel("Idx-Values")
-        plt.title("Deleted Vars: Idx-Colineal Ponderado")
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        plt.savefig("figure1.png")
-        plt.close()
-
-    # Gráfico seleccionadas
-    # Para obtener Ij de las seleccionadas
-    Ij_final, _, _, _ = calcular_Ij(X_final, y_final)
-    df_seleccionadas = pd.DataFrame({
-        "Variable": seleccionadas,
-        "Ij": Ij_final
-    })
-
-    plt.figure(figsize=(10, 6))
-    plt.bar(df_seleccionadas['Variable'], df_seleccionadas['Ij'], color='seagreen')
-    plt.xlabel("Number of Variables")
-    plt.ylabel("Idx-Values")
-    plt.title("Selected Vars: Idx-Colineal Ponderado")
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    plt.savefig("figure2.png")
-    plt.close()
-
-    print("Gráficos generados:")
-    print("- figure1.png (eliminadas)")
-    print("- figure2.png (seleccionadas)")
 
 if __name__ == '__main__':   
 	 main()
